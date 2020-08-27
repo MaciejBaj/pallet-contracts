@@ -82,6 +82,7 @@
 #[macro_use]
 pub mod gas;
 mod storage;
+pub mod escrow_exec;
 pub mod exec;
 pub mod wasm;
 mod rent;

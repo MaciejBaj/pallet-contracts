@@ -316,7 +316,7 @@ where
 		}
 	}
 
-	fn nested<'b, 'c: 'b>(&'c self, dest: T::AccountId, trie_id: TrieId)
+	pub fn nested<'b, 'c: 'b>(&'c self, dest: T::AccountId, trie_id: TrieId)
 		-> ExecutionContext<'b, T, V, L>
 	{
 		ExecutionContext {
@@ -546,7 +546,7 @@ impl<T: Trait> Token<T> for TransferFeeToken {
 }
 
 /// Describes possible transfer causes.
-enum TransferCause {
+pub enum TransferCause {
 	Call,
 	Instantiate,
 	Terminate,
@@ -617,6 +617,7 @@ fn transfer<'a, T: Trait, V: Vm<T>, L: Loader<T>>(
 	T::Currency::transfer(transactor, dest, value, existence_requirement)
 		.map_err(|_| Error::<T>::TransferFailed)?;
 
+	// Here switch dest into Escrow + Make a relevant entry in the Escrow storage transfers.
 	Ok(())
 }
 
@@ -632,7 +633,7 @@ fn transfer<'a, T: Trait, V: Vm<T>, L: Loader<T>>(
 /// on the path of the return from that call context. Therefore, care must be taken in these
 /// situations.
 pub struct CallContext<'a, 'b: 'a, T: Trait + 'b, V: Vm<T> + 'b, L: Loader<T>> {
-	ctx: &'a mut ExecutionContext<'b, T, V, L>,
+	pub ctx: &'a mut ExecutionContext<'b, T, V, L>,
 	caller: T::AccountId,
 	value_transferred: BalanceOf<T>,
 	timestamp: MomentOf<T>,
