@@ -13,7 +13,6 @@
 
 // You should have received a copy of the GNU General Public License
 // along with Substrate. If not, see <http://www.gnu.org/licenses/>.
-
 use crate::{
 	CodeHash, Config, ContractAddressFor, Event, RawEvent, Trait,
 	TrieId, BalanceOf, ContractInfo, TrieIdGenerator,
@@ -28,28 +27,67 @@ use frame_support::{
 	weights::Weight,
 	ensure, StorageMap,
 };
-use std::{cell::RefCell, collections::HashMap, marker::PhantomData, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, marker::PhantomData, rc::Rc, convert::TryInto};
 
 use crate::exec::*;
 use crate::exec::{TransferCause};
+use codec::{Encode, Decode};
+use frame_support::sp_runtime::DispatchResult;
 
-fn escrow_transfer<'a, T: Trait>(
-	gas_meter: &mut GasMeter<T>,
-	cause: TransferCause,
-	origin: TransactorKind,
+pub fn just_transfer<'a, T: Trait>(
 	transactor: &T::AccountId,
 	dest: &T::AccountId,
 	value: BalanceOf<T>,
+) -> DispatchResult {
+	T::Currency::transfer(transactor, dest, value, ExistenceRequirement::KeepAlive)
+}
+
+pub fn escrow_transfer<'a, T: Trait>(
+	escrow_account: &T::AccountId,
+	requester: &T::AccountId,
+	target_to: &T::AccountId,
+	value: BalanceOf<T>,
+	gas_meter: &mut GasMeter<T>,
+	mut transfers: &mut Vec<TransferEntry>,
 	config: &'a Config<T>,
+
 ) -> Result<(), DispatchError> {
-	println!("escrow_transfer");
-	// ToDo: Here switch dest into Escrow + Make a relevant entry in the Escrow storage transfers.
+	println!("DEBUG escrow_exec -- escrow_transfer");
+	// Verify that requester has enough money to make the transfers from within the contract.
+	ensure!(
+			T::Currency::total_balance(&requester.clone()).saturating_sub(value) >=
+				config.subsistence_threshold(),
+			Error::<T>::BelowSubsistenceThreshold,
+		);
+
+	// just transfer here the value of internal for contract transfer to escrow account.
+	just_transfer::<T>(requester, escrow_account, value);
+
+	transfers.push(TransferEntry {
+		to: T::AccountId::encode(target_to),
+		value: TryInto::<u32>::try_into(value).ok().unwrap(),
+		data: Vec::new(),
+		gas_left: gas_meter.gas_left(),
+	});
+
 	Ok(())
+}
+
+
+#[derive(Debug, PartialEq, Eq, Encode, Decode )]
+#[codec(compact)]
+pub struct TransferEntry {
+	pub to: Vec<u8>,
+	pub value: u32,
+	pub data: Vec<u8>,
+	pub gas_left: u64,
 }
 
 pub struct EscrowCallContext<'a, 'b: 'a, T: Trait + 'b, V: Vm<T> + 'b, L: Loader<T>> {
 	pub config: &'a Config<T>,
+	pub transfers: &'a mut Vec<TransferEntry>,
 	pub caller: T::AccountId,
+	pub requester: T::AccountId,
 	pub value_transferred: BalanceOf<T>,
 	pub timestamp: MomentOf<T>,
 	pub block_number: T::BlockNumber,
@@ -69,6 +107,7 @@ impl<'a, 'b: 'a, T, E, V, L> Ext for EscrowCallContext<'a, 'b, T, V, L>
 	}
 
 	fn set_storage(&mut self, key: StorageKey, value: Option<Vec<u8>>) {
+		println!("escrow set_storage {:?} : {:?}", key, value);
 		self.call_context.set_storage(key, value);
 	}
 
@@ -89,13 +128,13 @@ impl<'a, 'b: 'a, T, E, V, L> Ext for EscrowCallContext<'a, 'b, T, V, L>
 		gas_meter: &mut GasMeter<T>,
 	) -> Result<(), DispatchError> {
 		escrow_transfer(
-			gas_meter,
-			TransferCause::Call,
-			TransactorKind::Contract,
-			&self.call_context.ctx.self_account.clone(),
-			&to,
+			&self.caller.clone(),
+			&self.requester,
+			to,
 			value,
-			self.config
+			gas_meter,
+			self.transfers,
+			self.call_context.ctx.config
 		)
 	}
 
