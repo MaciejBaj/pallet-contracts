@@ -50,15 +50,14 @@ pub fn escrow_transfer<'a, T: Trait>(
 	gas_meter: &mut GasMeter<T>,
 	mut transfers: &mut Vec<TransferEntry>,
 	config: &'a Config<T>,
-
 ) -> Result<(), DispatchError> {
 	println!("DEBUG escrow_exec -- escrow_transfer");
 	// Verify that requester has enough money to make the transfers from within the contract.
-	ensure!(
-			T::Currency::total_balance(&requester.clone()).saturating_sub(value) >=
-				config.subsistence_threshold(),
-			Error::<T>::BelowSubsistenceThreshold,
-		);
+	if T::Currency::total_balance(&requester.clone()).saturating_sub(value) < config.subsistence_threshold() {
+		return Err(DispatchError::Other(
+			"Escrow Transfer failed as the requester doesn't have enough balance.",
+		));
+	}
 
 	// just transfer here the value of internal for contract transfer to escrow account.
 	just_transfer::<T>(requester, escrow_account, value);
