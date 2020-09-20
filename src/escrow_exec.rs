@@ -32,9 +32,9 @@ use std::{cell::RefCell, collections::HashMap, convert::TryInto, marker::Phantom
 
 use crate::exec::TransferCause;
 use crate::exec::*;
+use crate::wasm::{PrefabWasmModule, WasmExecutable, WasmLoader};
 use codec::{Decode, Encode};
 use frame_support::sp_runtime::DispatchResult;
-use crate::wasm::{WasmExecutable, PrefabWasmModule, WasmLoader};
 
 pub fn just_transfer<'a, T: Trait>(
     transactor: &T::AccountId,
@@ -89,9 +89,19 @@ pub struct TransferEntry {
     pub data: Vec<u8>,
 }
 
+#[derive(Debug, PartialEq, Eq, Encode, Decode, Clone)]
+#[codec(compact)]
+pub struct DeferredStorageWrite {
+    pub dest: Vec<u8>,
+    pub trie_id: Vec<u8>,
+    pub key: [u8; 32],
+    pub value: Option<Vec<u8>>,
+}
+
 pub struct EscrowCallContext<'a, 'b: 'a, T: Trait + 'b, V: Vm<T> + 'b, L: Loader<T>> {
     pub config: &'a Config<T>,
     pub transfers: &'a mut Vec<TransferEntry>,
+    pub deferred_storage_writes: &'a mut Vec<DeferredStorageWrite>,
     pub caller: T::AccountId,
     pub requester: T::AccountId,
     pub value_transferred: BalanceOf<T>,
@@ -114,7 +124,20 @@ where
 
     fn set_storage(&mut self, key: StorageKey, value: Option<Vec<u8>>) {
         println!("escrow set_storage {:?} : {:?}", key, value);
-        self.call_context.set_storage(key, value);
+
+        let trie_id = self.call_context.ctx.self_trie_id.as_ref().expect(
+            "`ctx.self_trie_id` points to an alive contract within the `CallContext`;\
+				it cannot be `None`;\
+				expect can't fail;\
+				qed",
+        );
+
+        self.deferred_storage_writes.push(DeferredStorageWrite {
+            dest: T::AccountId::encode(&self.call_context.ctx.self_account),
+            trie_id: trie_id.to_vec(),
+            key,
+            value,
+        });
     }
 
     fn instantiate(
@@ -160,9 +183,9 @@ where
         gas_meter: &mut GasMeter<T>,
         input_data: Vec<u8>,
     ) -> ExecResult {
-
         let executable = if let Some(ContractInfo::Alive(info)) = <ContractInfoOf<T>>::get(to) {
-            self.call_context.ctx
+            self.call_context
+                .ctx
                 .loader
                 .load_main(&info.code_hash)
                 .map_err(|_| Error::<T>::CodeNotFound)?
@@ -170,7 +193,18 @@ where
             Err(Error::<T>::NotCallable)?
         };
 
-        self.call_context.ctx.escrow_call(&self.caller.clone(), &self.requester.clone(), &to, &to, value, gas_meter, input_data, self.transfers, &executable)
+        self.call_context.ctx.escrow_call(
+            &self.caller.clone(),
+            &self.requester.clone(),
+            &to,
+            &to,
+            value,
+            gas_meter,
+            input_data,
+            self.transfers,
+            self.deferred_storage_writes,
+            &executable,
+        )
     }
 
     fn restore_to(
@@ -241,14 +275,12 @@ where
     }
 }
 
-
 impl<'a, T, E, V, L> ExecutionContext<'a, T, V, L>
-    where
-        T: Trait,
-        L: Loader<T, Executable = E>,
-        V: Vm<T, Executable = E>,
+where
+    T: Trait,
+    L: Loader<T, Executable = E>,
+    V: Vm<T, Executable = E>,
 {
-
     /// Make a call to the specified address, optionally transferring some funds.
     pub fn escrow_call(
         &mut self,
@@ -260,6 +292,7 @@ impl<'a, T, E, V, L> ExecutionContext<'a, T, V, L>
         gas_meter: &mut GasMeter<T>,
         input_data: Vec<u8>,
         mut transfers: &mut Vec<TransferEntry>,
+        mut deferred_storage_writes: &mut Vec<DeferredStorageWrite>,
         executable: &E,
     ) -> ExecResult {
         if self.depth == self.config.max_depth as usize {
@@ -305,17 +338,15 @@ impl<'a, T, E, V, L> ExecutionContext<'a, T, V, L>
                 timestamp: T::Time::now(),
                 value_transferred: value.clone(),
                 transfers,
+                deferred_storage_writes,
                 call_context: nested.new_call_context(escrow_account.clone(), value),
             };
 
-            let output = ext.call_context.ctx
+            let output = ext
+                .call_context
+                .ctx
                 .vm
-                .execute(
-                    executable,
-                    ext,
-                    input_data,
-                    gas_meter,
-                )
+                .execute(executable, ext, input_data, gas_meter)
                 .map_err(|e| ExecError {
                     error: e.error,
                     origin: ErrorOrigin::Callee,
