@@ -14,208 +14,313 @@
 // You should have received a copy of the GNU General Public License
 // along with Substrate. If not, see <http://www.gnu.org/licenses/>.
 use crate::{
-	CodeHash, Config, ContractAddressFor, Event, RawEvent, Trait,
-	TrieId, BalanceOf, ContractInfo, TrieIdGenerator,
-	gas::{Gas, GasMeter, Token}, rent, storage, Error, ContractInfoOf
+    gas::{Gas, GasMeter, Token},
+    rent, storage, BalanceOf, CodeHash, Config, ContractAddressFor, ContractInfo, ContractInfoOf,
+    Error, Event, RawEvent, Trait, TrieId, TrieIdGenerator,
 };
 use bitflags::bitflags;
-use sp_std::prelude::*;
-use sp_runtime::traits::{Bounded, Zero, Convert, Saturating};
 use frame_support::{
-	dispatch::DispatchError,
-	traits::{ExistenceRequirement, Currency, Time, Randomness},
-	weights::Weight,
-	ensure, StorageMap,
+    dispatch::DispatchError,
+    ensure,
+    traits::{Currency, ExistenceRequirement, Randomness, Time},
+    weights::Weight,
+    StorageMap,
 };
-use std::{cell::RefCell, collections::HashMap, marker::PhantomData, rc::Rc, convert::TryInto};
+use sp_runtime::traits::{Bounded, Convert, Saturating, Zero};
+use sp_std::prelude::*;
+use std::{cell::RefCell, collections::HashMap, convert::TryInto, marker::PhantomData, rc::Rc};
 
+use crate::exec::TransferCause;
 use crate::exec::*;
-use crate::exec::{TransferCause};
-use codec::{Encode, Decode};
+use codec::{Decode, Encode};
 use frame_support::sp_runtime::DispatchResult;
+use crate::wasm::{WasmExecutable, PrefabWasmModule, WasmLoader};
 
 pub fn just_transfer<'a, T: Trait>(
-	transactor: &T::AccountId,
-	dest: &T::AccountId,
-	value: BalanceOf<T>,
+    transactor: &T::AccountId,
+    dest: &T::AccountId,
+    value: BalanceOf<T>,
 ) -> DispatchResult {
-	T::Currency::transfer(transactor, dest, value, ExistenceRequirement::KeepAlive)
+    T::Currency::transfer(transactor, dest, value, ExistenceRequirement::KeepAlive)
 }
 
 pub fn escrow_transfer<'a, T: Trait>(
-	escrow_account: &T::AccountId,
-	requester: &T::AccountId,
-	target_to: &T::AccountId,
-	value: BalanceOf<T>,
-	gas_meter: &mut GasMeter<T>,
-	mut transfers: &mut Vec<TransferEntry>,
-	config: &'a Config<T>,
+    escrow_account: &T::AccountId,
+    requester: &T::AccountId,
+    target_to: &T::AccountId,
+    value: BalanceOf<T>,
+    gas_meter: &mut GasMeter<T>,
+    mut transfers: &mut Vec<TransferEntry>,
+    config: &'a Config<T>,
 ) -> Result<(), DispatchError> {
-	println!("DEBUG escrow_exec -- escrow_transfer");
-	// Verify that requester has enough money to make the transfers from within the contract.
-	if T::Currency::total_balance(&requester.clone()).saturating_sub(value) < config.subsistence_threshold() {
-		return Err(DispatchError::Other(
-			"Escrow Transfer failed as the requester doesn't have enough balance.",
-		));
-	}
+    println!("DEBUG escrow_exec -- escrow_transfer");
+    // Verify that requester has enough money to make the transfers from within the contract.
+    if T::Currency::total_balance(&requester.clone()).saturating_sub(value)
+        < config.subsistence_threshold()
+    {
+        println!(
+            "DEBUG escrow_exec -- REQUESTER {:?} VAL {:?} ST {:?} ",
+            T::Currency::free_balance(&requester.clone()),
+            value,
+            config.subsistence_threshold()
+        );
+        return Err(DispatchError::Other(
+            "Escrow Transfer failed as the requester doesn't have enough balance.",
+        ));
+    }
 
-	// just transfer here the value of internal for contract transfer to escrow account.
-	just_transfer::<T>(requester, escrow_account, value);
+    // just transfer here the value of internal for contract transfer to escrow account.
+    just_transfer::<T>(requester, escrow_account, value);
 
-	transfers.push(TransferEntry {
-		to: T::AccountId::encode(target_to),
-		value: TryInto::<u32>::try_into(value).ok().unwrap(),
-		data: Vec::new(),
-		gas_left: gas_meter.gas_left(),
-	});
+    transfers.push(TransferEntry {
+        to: T::AccountId::encode(target_to),
+        value: TryInto::<u32>::try_into(value).ok().unwrap(),
+        data: Vec::new(),
+    });
 
-	Ok(())
+    Ok(())
 }
 
-
-#[derive(Debug, PartialEq, Eq, Encode, Decode )]
+#[derive(Debug, PartialEq, Eq, Encode, Decode, Clone)]
 #[codec(compact)]
 pub struct TransferEntry {
-	pub to: Vec<u8>,
-	pub value: u32,
-	pub data: Vec<u8>,
-	pub gas_left: u64,
+    pub to: Vec<u8>,
+    pub value: u32,
+    pub data: Vec<u8>,
 }
 
 pub struct EscrowCallContext<'a, 'b: 'a, T: Trait + 'b, V: Vm<T> + 'b, L: Loader<T>> {
-	pub config: &'a Config<T>,
-	pub transfers: &'a mut Vec<TransferEntry>,
-	pub caller: T::AccountId,
-	pub requester: T::AccountId,
-	pub value_transferred: BalanceOf<T>,
-	pub timestamp: MomentOf<T>,
-	pub block_number: T::BlockNumber,
-	pub call_context: CallContext<'a, 'b, T, V, L>
+    pub config: &'a Config<T>,
+    pub transfers: &'a mut Vec<TransferEntry>,
+    pub caller: T::AccountId,
+    pub requester: T::AccountId,
+    pub value_transferred: BalanceOf<T>,
+    pub timestamp: MomentOf<T>,
+    pub block_number: T::BlockNumber,
+    pub call_context: CallContext<'a, 'b, T, V, L>,
 }
 
 impl<'a, 'b: 'a, T, E, V, L> Ext for EscrowCallContext<'a, 'b, T, V, L>
-	where
-		T: Trait + 'b,
-		V: Vm<T, Executable = E>,
-		L: Loader<T, Executable = E>,
+where
+    T: Trait + 'b,
+    V: Vm<T, Executable = E>,
+    L: Loader<T, Executable = E>,
 {
-	type T = T;
+    type T = T;
 
-	fn get_storage(&self, key: &StorageKey) -> Option<Vec<u8>> {
-		self.call_context.get_storage(key)
-	}
+    fn get_storage(&self, key: &StorageKey) -> Option<Vec<u8>> {
+        self.call_context.get_storage(key)
+    }
 
-	fn set_storage(&mut self, key: StorageKey, value: Option<Vec<u8>>) {
-		println!("escrow set_storage {:?} : {:?}", key, value);
-		self.call_context.set_storage(key, value);
-	}
+    fn set_storage(&mut self, key: StorageKey, value: Option<Vec<u8>>) {
+        println!("escrow set_storage {:?} : {:?}", key, value);
+        self.call_context.set_storage(key, value);
+    }
 
-	fn instantiate(
-		&mut self,
-		code_hash: &CodeHash<T>,
-		endowment: BalanceOf<T>,
-		gas_meter: &mut GasMeter<T>,
-		input_data: Vec<u8>,
-	) -> Result<(AccountIdOf<T>, ExecReturnValue), ExecError> {
-		self.call_context.instantiate(code_hash, endowment, gas_meter, input_data)
-	}
+    fn instantiate(
+        &mut self,
+        code_hash: &CodeHash<T>,
+        endowment: BalanceOf<T>,
+        gas_meter: &mut GasMeter<T>,
+        input_data: Vec<u8>,
+    ) -> Result<(AccountIdOf<T>, ExecReturnValue), ExecError> {
+        self.call_context
+            .instantiate(code_hash, endowment, gas_meter, input_data)
+    }
 
-	fn transfer(
-		&mut self,
-		to: &T::AccountId,
-		value: BalanceOf<T>,
-		gas_meter: &mut GasMeter<T>,
-	) -> Result<(), DispatchError> {
-		escrow_transfer(
-			&self.caller.clone(),
-			&self.requester,
-			to,
-			value,
-			gas_meter,
-			self.transfers,
-			self.call_context.ctx.config
-		)
-	}
+    fn transfer(
+        &mut self,
+        to: &T::AccountId,
+        value: BalanceOf<T>,
+        gas_meter: &mut GasMeter<T>,
+    ) -> Result<(), DispatchError> {
+        escrow_transfer(
+            &self.caller.clone(),
+            &self.requester,
+            to,
+            value,
+            gas_meter,
+            self.transfers,
+            self.call_context.ctx.config,
+        )
+    }
 
-	fn terminate(
-		&mut self,
-		beneficiary: &AccountIdOf<Self::T>,
-		gas_meter: &mut GasMeter<Self::T>,
-	) -> Result<(), DispatchError> {
-		self.call_context.terminate(beneficiary, gas_meter)
-	}
+    fn terminate(
+        &mut self,
+        beneficiary: &AccountIdOf<Self::T>,
+        gas_meter: &mut GasMeter<Self::T>,
+    ) -> Result<(), DispatchError> {
+        self.call_context.terminate(beneficiary, gas_meter)
+    }
 
-	fn call(
-		&mut self,
-		to: &T::AccountId,
-		value: BalanceOf<T>,
-		gas_meter: &mut GasMeter<T>,
-		input_data: Vec<u8>,
-	) -> ExecResult {
-		self.call_context.call(to, value, gas_meter, input_data)
-	}
+    fn call(
+        &mut self,
+        to: &T::AccountId,
+        value: BalanceOf<T>,
+        gas_meter: &mut GasMeter<T>,
+        input_data: Vec<u8>,
+    ) -> ExecResult {
 
-	fn restore_to(
-		&mut self,
-		dest: AccountIdOf<Self::T>,
-		code_hash: CodeHash<Self::T>,
-		rent_allowance: BalanceOf<Self::T>,
-		delta: Vec<StorageKey>,
-	) -> Result<(), &'static str> {
-		self.call_context.restore_to(dest, code_hash, rent_allowance, delta)
-	}
+        let executable = if let Some(ContractInfo::Alive(info)) = <ContractInfoOf<T>>::get(to) {
+            self.call_context.ctx
+                .loader
+                .load_main(&info.code_hash)
+                .map_err(|_| Error::<T>::CodeNotFound)?
+        } else {
+            Err(Error::<T>::NotCallable)?
+        };
 
-	fn caller(&self) -> &T::AccountId {
-		&self.caller
-	}
+        self.call_context.ctx.escrow_call(&self.caller.clone(), &self.requester.clone(), &to, &to, value, gas_meter, input_data, self.transfers, &executable)
+    }
 
-	fn address(&self) -> &T::AccountId {
-		&self.call_context.ctx.self_account
-	}
+    fn restore_to(
+        &mut self,
+        dest: AccountIdOf<Self::T>,
+        code_hash: CodeHash<Self::T>,
+        rent_allowance: BalanceOf<Self::T>,
+        delta: Vec<StorageKey>,
+    ) -> Result<(), &'static str> {
+        self.call_context
+            .restore_to(dest, code_hash, rent_allowance, delta)
+    }
 
-	fn balance(&self) -> BalanceOf<T> {
-		T::Currency::free_balance(&self.call_context.ctx.self_account)
-	}
+    fn caller(&self) -> &T::AccountId {
+        &self.caller
+    }
 
-	fn value_transferred(&self) -> BalanceOf<T> {
-		self.value_transferred
-	}
+    fn address(&self) -> &T::AccountId {
+        &self.call_context.ctx.self_account
+    }
 
-	fn now(&self) -> &MomentOf<T> {
-		&self.timestamp
-	}
+    fn balance(&self) -> BalanceOf<T> {
+        T::Currency::free_balance(&self.call_context.ctx.self_account)
+    }
 
-	fn minimum_balance(&self) -> BalanceOf<T> {
-		self.config.existential_deposit
-	}
+    fn value_transferred(&self) -> BalanceOf<T> {
+        self.value_transferred
+    }
 
-	fn tombstone_deposit(&self) -> BalanceOf<T> {
-		self.config.tombstone_deposit
-	}
+    fn now(&self) -> &MomentOf<T> {
+        &self.timestamp
+    }
 
-	fn random(&self, subject: &[u8]) -> SeedOf<T> {
-		T::Randomness::random(subject)
-	}
+    fn minimum_balance(&self) -> BalanceOf<T> {
+        self.config.existential_deposit
+    }
 
-	fn deposit_event(&mut self, topics: Vec<T::Hash>, data: Vec<u8>) {
-		self.call_context.deposit_event(topics, data);
-	}
+    fn tombstone_deposit(&self) -> BalanceOf<T> {
+        self.config.tombstone_deposit
+    }
 
-	fn set_rent_allowance(&mut self, rent_allowance: BalanceOf<T>) {
-		self.call_context.set_rent_allowance(rent_allowance);
-	}
+    fn random(&self, subject: &[u8]) -> SeedOf<T> {
+        T::Randomness::random(subject)
+    }
 
-	fn rent_allowance(&self) -> BalanceOf<T> {
-		self.call_context.rent_allowance()
-	}
+    fn deposit_event(&mut self, topics: Vec<T::Hash>, data: Vec<u8>) {
+        self.call_context.deposit_event(topics, data);
+    }
 
-	fn block_number(&self) -> T::BlockNumber { self.block_number }
+    fn set_rent_allowance(&mut self, rent_allowance: BalanceOf<T>) {
+        self.call_context.set_rent_allowance(rent_allowance);
+    }
 
-	fn max_value_size(&self) -> u32 {
-		self.config.max_value_size
-	}
+    fn rent_allowance(&self) -> BalanceOf<T> {
+        self.call_context.rent_allowance()
+    }
 
-	fn get_weight_price(&self, weight: Weight) -> BalanceOf<Self::T> {
-		self.call_context.get_weight_price(weight)
-	}
+    fn block_number(&self) -> T::BlockNumber {
+        self.block_number
+    }
+
+    fn max_value_size(&self) -> u32 {
+        self.config.max_value_size
+    }
+
+    fn get_weight_price(&self, weight: Weight) -> BalanceOf<Self::T> {
+        self.call_context.get_weight_price(weight)
+    }
+}
+
+
+impl<'a, T, E, V, L> ExecutionContext<'a, T, V, L>
+    where
+        T: Trait,
+        L: Loader<T, Executable = E>,
+        V: Vm<T, Executable = E>,
+{
+
+    /// Make a call to the specified address, optionally transferring some funds.
+    pub fn escrow_call(
+        &mut self,
+        escrow_account: &T::AccountId,
+        requester: &T::AccountId,
+        dest: &T::AccountId,
+        transfer_dest: &T::AccountId,
+        value: BalanceOf<T>,
+        gas_meter: &mut GasMeter<T>,
+        input_data: Vec<u8>,
+        mut transfers: &mut Vec<TransferEntry>,
+        executable: &E,
+    ) -> ExecResult {
+        if self.depth == self.config.max_depth as usize {
+            Err(Error::<T>::MaxCallDepthReached)?
+        }
+
+        if gas_meter
+            .charge(self.config, ExecFeeToken::Call)
+            .is_out_of_gas()
+        {
+            Err(Error::<T>::OutOfGas)?
+        }
+
+        // Assumption: `collect_rent` doesn't collide with overlay because
+        // `collect_rent` will be done on first call and destination contract and balance
+        // cannot be changed before the first call
+        // We do not allow 'calling' plain accounts. For transfering value
+        // `seal_transfer` must be used.
+        let contract = if let Some(ContractInfo::Alive(info)) = rent::collect_rent::<T>(dest) {
+            info
+        } else {
+            Err(Error::<T>::NotCallable)?
+        };
+
+        self.with_nested_context(dest.clone(), contract.trie_id.clone(), |nested| {
+            if value > BalanceOf::<T>::zero() {
+                escrow_transfer(
+                    &escrow_account.clone(),
+                    &requester.clone(),
+                    &transfer_dest.clone(),
+                    value,
+                    gas_meter,
+                    transfers,
+                    &nested.config.clone(),
+                );
+            }
+
+            let ext = EscrowCallContext {
+                config: &nested.config.clone(),
+                block_number: <frame_system::Module<T>>::block_number(),
+                caller: escrow_account.clone(),
+                requester: requester.clone(),
+                timestamp: T::Time::now(),
+                value_transferred: value.clone(),
+                transfers,
+                call_context: nested.new_call_context(escrow_account.clone(), value),
+            };
+
+            let output = ext.call_context.ctx
+                .vm
+                .execute(
+                    executable,
+                    ext,
+                    input_data,
+                    gas_meter,
+                )
+                .map_err(|e| ExecError {
+                    error: e.error,
+                    origin: ErrorOrigin::Callee,
+                })?;
+            Ok(output)
+        })
+    }
 }
