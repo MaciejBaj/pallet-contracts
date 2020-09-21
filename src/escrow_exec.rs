@@ -22,6 +22,7 @@ use bitflags::bitflags;
 use frame_support::{
     dispatch::DispatchError,
     ensure,
+    storage::child,
     traits::{Currency, ExistenceRequirement, Randomness, Time},
     weights::Weight,
     StorageMap,
@@ -98,10 +99,17 @@ pub struct DeferredStorageWrite {
     pub value: Option<Vec<u8>>,
 }
 
+#[derive(Debug, PartialEq, Eq, Encode, Decode, Default, Clone)]
+#[codec(compact)]
+pub struct CallStamp {
+    pub storage: Vec<u8>,
+}
+
 pub struct EscrowCallContext<'a, 'b: 'a, T: Trait + 'b, V: Vm<T> + 'b, L: Loader<T>> {
     pub config: &'a Config<T>,
     pub transfers: &'a mut Vec<TransferEntry>,
     pub deferred_storage_writes: &'a mut Vec<DeferredStorageWrite>,
+    pub call_stamps: &'a mut Vec<CallStamp>,
     pub caller: T::AccountId,
     pub requester: T::AccountId,
     pub value_transferred: BalanceOf<T>,
@@ -203,6 +211,7 @@ where
             input_data,
             self.transfers,
             self.deferred_storage_writes,
+            self.call_stamps,
             &executable,
         )
     }
@@ -293,6 +302,7 @@ where
         input_data: Vec<u8>,
         mut transfers: &mut Vec<TransferEntry>,
         mut deferred_storage_writes: &mut Vec<DeferredStorageWrite>,
+        mut call_stamps: &mut Vec<CallStamp>,
         executable: &E,
     ) -> ExecResult {
         if self.depth == self.config.max_depth as usize {
@@ -317,6 +327,9 @@ where
             Err(Error::<T>::NotCallable)?
         };
 
+        call_stamps.push(CallStamp {
+            storage: child::root(&contract.child_trie_info()),
+        });
         self.with_nested_context(dest.clone(), contract.trie_id.clone(), |nested| {
             if value > BalanceOf::<T>::zero() {
                 escrow_transfer(
@@ -339,6 +352,7 @@ where
                 value_transferred: value.clone(),
                 transfers,
                 deferred_storage_writes,
+                call_stamps,
                 call_context: nested.new_call_context(escrow_account.clone(), value),
             };
 
