@@ -102,7 +102,8 @@ pub struct DeferredStorageWrite {
 #[derive(Debug, PartialEq, Eq, Encode, Decode, Default, Clone)]
 #[codec(compact)]
 pub struct CallStamp {
-    pub storage: Vec<u8>,
+    pub pre_storage: Vec<u8>,
+    pub post_storage: Vec<u8>,
     pub dest: Vec<u8>,
 }
 
@@ -330,14 +331,13 @@ where
             Err(Error::<T>::NotCallable)?
         };
 
-        call_stamps.push(CallStamp {
-            storage: child::root(&contract.child_trie_info()),
-            dest: T::AccountId::encode(&dest.clone()),
-        });
+        let pre_storage = child::root(&contract.child_trie_info());
+        let mut post_storage = vec![];
 
         // Set both possible output variables in outer scope.
-        let successful_execution_err =
-            DispatchError::Other("Rollback after successful execution as it's an escrow execution.");
+        let successful_execution_err = DispatchError::Other(
+            "Rollback after successful execution as it's an escrow execution.",
+        );
         let mut output_data = vec![];
 
         let escrow_exec_result =
@@ -377,6 +377,13 @@ where
                         origin: ErrorOrigin::Callee,
                     })?;
 
+                post_storage = child::root(
+                    &<ContractInfoOf<T>>::get(dest.clone())
+                        .unwrap()
+                        .get_alive()
+                        .unwrap()
+                        .child_trie_info(),
+                );
                 output_data = output.data.clone();
 
                 // Assume that top level gets called as the very last one in recursion chain of calls from with the contract (ext_call).
@@ -389,6 +396,12 @@ where
                     Ok(output)
                 }
             });
+
+        call_stamps.push(CallStamp {
+            pre_storage,
+            post_storage,
+            dest: T::AccountId::encode(&dest.clone()),
+        });
 
         match escrow_exec_result {
             Ok(output) => Ok(output),
