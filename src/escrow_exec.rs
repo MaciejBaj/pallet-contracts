@@ -386,8 +386,8 @@ where
                 );
                 output_data = output.data.clone();
 
-                // Assume that top level gets called as the very last one in recursion chain of calls from with the contract (ext_call).
-                if nested.depth == 0 {
+                // Assume that top level + 1 gets called as the very last one in recursion chain of calls from with the contract (ext_call).
+                if nested.depth == 1 {
                     Err(ExecError {
                         error: successful_execution_err,
                         origin: ErrorOrigin::Caller,
