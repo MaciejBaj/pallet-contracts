@@ -103,6 +103,7 @@ pub struct DeferredStorageWrite {
 #[codec(compact)]
 pub struct CallStamp {
     pub storage: Vec<u8>,
+    pub dest: Vec<u8>,
 }
 
 pub struct EscrowCallContext<'a, 'b: 'a, T: Trait + 'b, V: Vm<T> + 'b, L: Loader<T>> {
@@ -329,6 +330,7 @@ where
 
         call_stamps.push(CallStamp {
             storage: child::root(&contract.child_trie_info()),
+            dest: T::AccountId::encode(&dest.clone()),
         });
         self.with_nested_context(dest.clone(), contract.trie_id.clone(), |nested| {
             if value > BalanceOf::<T>::zero() {
