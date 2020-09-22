@@ -145,8 +145,10 @@ where
             dest: T::AccountId::encode(&self.call_context.ctx.self_account),
             trie_id: trie_id.to_vec(),
             key,
-            value,
+            value: value.clone(),
         });
+
+        self.call_context.set_storage(key, value)
     }
 
     fn instantiate(
@@ -332,42 +334,74 @@ where
             storage: child::root(&contract.child_trie_info()),
             dest: T::AccountId::encode(&dest.clone()),
         });
-        self.with_nested_context(dest.clone(), contract.trie_id.clone(), |nested| {
-            if value > BalanceOf::<T>::zero() {
-                escrow_transfer(
-                    &escrow_account.clone(),
-                    &requester.clone(),
-                    &transfer_dest.clone(),
-                    value,
-                    gas_meter,
+
+        // Set both possible output variables in outer scope.
+        let successful_execution_err =
+            DispatchError::Other("Rollback after successful execution as it's an escrow execution.");
+        let mut output_data = vec![];
+
+        let escrow_exec_result =
+            self.with_nested_context(dest.clone(), contract.trie_id.clone(), |nested| {
+                if value > BalanceOf::<T>::zero() {
+                    escrow_transfer(
+                        &escrow_account.clone(),
+                        &requester.clone(),
+                        &transfer_dest.clone(),
+                        value,
+                        gas_meter,
+                        transfers,
+                        &nested.config.clone(),
+                    );
+                }
+
+                let ext = EscrowCallContext {
+                    config: &nested.config.clone(),
+                    block_number: <frame_system::Module<T>>::block_number(),
+                    caller: escrow_account.clone(),
+                    requester: requester.clone(),
+                    timestamp: T::Time::now(),
+                    value_transferred: value.clone(),
                     transfers,
-                    &nested.config.clone(),
-                );
+                    deferred_storage_writes,
+                    call_stamps,
+                    call_context: nested.new_call_context(escrow_account.clone(), value),
+                };
+
+                let output = ext
+                    .call_context
+                    .ctx
+                    .vm
+                    .execute(executable, ext, input_data, gas_meter)
+                    .map_err(|e| ExecError {
+                        error: e.error,
+                        origin: ErrorOrigin::Callee,
+                    })?;
+
+                output_data = output.data.clone();
+
+                // Assume that top level gets called as the very last one in recursion chain of calls from with the contract (ext_call).
+                if nested.depth == 0 {
+                    Err(ExecError {
+                        error: successful_execution_err,
+                        origin: ErrorOrigin::Caller,
+                    })
+                } else {
+                    Ok(output)
+                }
+            });
+
+        match escrow_exec_result {
+            Ok(output) => Ok(output),
+            Err(err) => {
+                if err.error == successful_execution_err {
+                    Ok(ExecReturnValue {
+                        flags: ReturnFlags::REVERT,
+                        data: output_data,
+                    })
+                } else {
+                    Err(err)
+                }
             }
-
-            let ext = EscrowCallContext {
-                config: &nested.config.clone(),
-                block_number: <frame_system::Module<T>>::block_number(),
-                caller: escrow_account.clone(),
-                requester: requester.clone(),
-                timestamp: T::Time::now(),
-                value_transferred: value.clone(),
-                transfers,
-                deferred_storage_writes,
-                call_stamps,
-                call_context: nested.new_call_context(escrow_account.clone(), value),
-            };
-
-            let output = ext
-                .call_context
-                .ctx
-                .vm
-                .execute(executable, ext, input_data, gas_meter)
-                .map_err(|e| ExecError {
-                    error: e.error,
-                    origin: ErrorOrigin::Callee,
-                })?;
-            Ok(output)
-        })
+        }
     }
 }
