@@ -85,7 +85,7 @@ mod benchmarking;
 pub mod escrow_exec;
 pub mod exec;
 pub mod rent;
-mod storage;
+pub mod storage;
 pub mod wasm;
 
 #[cfg(test)]
