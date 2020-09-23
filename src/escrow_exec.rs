@@ -45,6 +45,19 @@ pub fn just_transfer<'a, T: Trait>(
     T::Currency::transfer(transactor, dest, value, ExistenceRequirement::KeepAlive)
 }
 
+pub fn commit_deferred_transfers<T: Trait>(
+    escrow_account: T::AccountId,
+    transfers: &mut Vec<TransferEntry>,
+) {
+    // Give the money back to the requester from the transfers that succeeded.
+    for mut transfer in transfers.iter() {
+        just_transfer::<T>(
+            &escrow_account,
+            &T::AccountId::decode(&mut &transfer.to[..]).unwrap(),
+            BalanceOf::<T>::from(transfer.value),
+        );
+    }
+}
 pub fn escrow_transfer<'a, T: Trait>(
     escrow_account: &T::AccountId,
     requester: &T::AccountId,
@@ -54,7 +67,7 @@ pub fn escrow_transfer<'a, T: Trait>(
     mut transfers: &mut Vec<TransferEntry>,
     config: &'a Config<T>,
 ) -> Result<(), DispatchError> {
-    println!("DEBUG escrow_exec -- escrow_transfer");
+    println!("DEBUG escrow_exec -- escrow_transfer REQ {:?} ES_ACC {:?} VAL {:?}", requester, escrow_account, value);
     // Verify that requester has enough money to make the transfers from within the contract.
     if T::Currency::total_balance(&requester.clone()).saturating_sub(value)
         < config.subsistence_threshold()
@@ -69,17 +82,18 @@ pub fn escrow_transfer<'a, T: Trait>(
             "Escrow Transfer failed as the requester doesn't have enough balance.",
         ));
     }
-
-    // just transfer here the value of internal for contract transfer to escrow account.
-    just_transfer::<T>(requester, escrow_account, value);
-
-    transfers.push(TransferEntry {
-        to: T::AccountId::encode(target_to),
-        value: TryInto::<u32>::try_into(value).ok().unwrap(),
-        data: Vec::new(),
-    });
-
-    Ok(())
+    // Just transfer here the value of internal for contract transfer to escrow account.
+    return match just_transfer::<T>(requester, escrow_account, value) {
+        Ok(_) => {
+            transfers.push(TransferEntry {
+                to: T::AccountId::encode(target_to),
+                value: TryInto::<u32>::try_into(value).ok().unwrap(),
+                data: Vec::new(),
+            });
+            Ok(())
+        },
+        Err(err) => Err(err)
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Encode, Decode, Clone)]
@@ -388,6 +402,8 @@ where
 
                 // Assume that top level + 1 gets called as the very last one in recursion chain of calls from with the contract (ext_call).
                 if nested.depth == 1 {
+                    // Signalize error despite successful execution to revert the changes made to potentially external contract.
+                    // The changes at this point can be twofold: storage writes and transfers from requester to escrow account.
                     Err(ExecError {
                         error: successful_execution_err,
                         origin: ErrorOrigin::Caller,
@@ -402,11 +418,19 @@ where
             post_storage,
             dest: T::AccountId::encode(&dest.clone()),
         });
-
         match escrow_exec_result {
             Ok(output) => Ok(output),
             Err(err) => {
                 if err.error == successful_execution_err {
+                    // Write should be reverted, but the transfer should stay.
+                    // Transfer funds from requester to escrow account again.
+                    for mut transfer in transfers.iter() {
+                        just_transfer::<T>(
+                            &requester.clone(),
+                            &escrow_account.clone(),
+                            BalanceOf::<T>::from(transfer.value),
+                        );
+                    }
                     Ok(ExecReturnValue {
                         flags: ReturnFlags::REVERT,
                         data: output_data,
