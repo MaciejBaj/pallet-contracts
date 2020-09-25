@@ -13,12 +13,21 @@
 
 // You should have received a copy of the GNU General Public License
 // along with Substrate. If not, see <http://www.gnu.org/licenses/>.
+use crate::exec::TransferCause;
+use crate::exec::*;
+use crate::wasm::{PrefabWasmModule, WasmExecutable, WasmLoader};
 use crate::{
     gas::{Gas, GasMeter, Token},
     rent, storage, BalanceOf, CodeHash, Config, ContractAddressFor, ContractInfo, ContractInfoOf,
     Error, Event, RawEvent, Trait, TrieId, TrieIdGenerator,
 };
 use bitflags::bitflags;
+use codec::{Decode, Encode};
+use escrow_gateway_primitives::{
+    transfers::{escrow_transfer, just_transfer, BalanceOf as EscrowBalanceOf, TransferEntry},
+    Trait as EscrowTrait,
+};
+use frame_support::sp_runtime::DispatchResult;
 use frame_support::{
     dispatch::DispatchError,
     ensure,
@@ -28,81 +37,8 @@ use frame_support::{
     StorageMap,
 };
 use sp_runtime::traits::{Bounded, Convert, Saturating, Zero};
-use sp_std::prelude::*;
-use std::{cell::RefCell, collections::HashMap, convert::TryInto, marker::PhantomData, rc::Rc};
-
-use crate::exec::TransferCause;
-use crate::exec::*;
-use crate::wasm::{PrefabWasmModule, WasmExecutable, WasmLoader};
-use codec::{Decode, Encode};
-use frame_support::sp_runtime::DispatchResult;
-
-pub fn just_transfer<'a, T: Trait>(
-    transactor: &T::AccountId,
-    dest: &T::AccountId,
-    value: BalanceOf<T>,
-) -> DispatchResult {
-    T::Currency::transfer(transactor, dest, value, ExistenceRequirement::KeepAlive)
-}
-
-pub fn commit_deferred_transfers<T: Trait>(
-    escrow_account: T::AccountId,
-    transfers: &mut Vec<TransferEntry>,
-) {
-    // Give the money back to the requester from the transfers that succeeded.
-    for mut transfer in transfers.iter() {
-        just_transfer::<T>(
-            &escrow_account,
-            &T::AccountId::decode(&mut &transfer.to[..]).unwrap(),
-            BalanceOf::<T>::from(transfer.value),
-        );
-    }
-}
-pub fn escrow_transfer<'a, T: Trait>(
-    escrow_account: &T::AccountId,
-    requester: &T::AccountId,
-    target_to: &T::AccountId,
-    value: BalanceOf<T>,
-    gas_meter: &mut GasMeter<T>,
-    mut transfers: &mut Vec<TransferEntry>,
-    config: &'a Config<T>,
-) -> Result<(), DispatchError> {
-    println!("DEBUG escrow_exec -- escrow_transfer REQ {:?} ES_ACC {:?} VAL {:?}", requester, escrow_account, value);
-    // Verify that requester has enough money to make the transfers from within the contract.
-    if T::Currency::total_balance(&requester.clone()).saturating_sub(value)
-        < config.subsistence_threshold()
-    {
-        println!(
-            "DEBUG escrow_exec -- REQUESTER {:?} VAL {:?} ST {:?} ",
-            T::Currency::free_balance(&requester.clone()),
-            value,
-            config.subsistence_threshold()
-        );
-        return Err(DispatchError::Other(
-            "Escrow Transfer failed as the requester doesn't have enough balance.",
-        ));
-    }
-    // Just transfer here the value of internal for contract transfer to escrow account.
-    return match just_transfer::<T>(requester, escrow_account, value) {
-        Ok(_) => {
-            transfers.push(TransferEntry {
-                to: T::AccountId::encode(target_to),
-                value: TryInto::<u32>::try_into(value).ok().unwrap(),
-                data: Vec::new(),
-            });
-            Ok(())
-        },
-        Err(err) => Err(err)
-    }
-}
-
-#[derive(Debug, PartialEq, Eq, Encode, Decode, Clone)]
-#[codec(compact)]
-pub struct TransferEntry {
-    pub to: Vec<u8>,
-    pub value: u32,
-    pub data: Vec<u8>,
-}
+use sp_std::{cell::RefCell, convert::TryInto, marker::PhantomData, prelude::*, rc::Rc};
+use std::collections::HashMap;
 
 #[derive(Debug, PartialEq, Eq, Encode, Decode, Clone)]
 #[codec(compact)]
@@ -136,7 +72,7 @@ pub struct EscrowCallContext<'a, 'b: 'a, T: Trait + 'b, V: Vm<T> + 'b, L: Loader
 
 impl<'a, 'b: 'a, T, E, V, L> Ext for EscrowCallContext<'a, 'b, T, V, L>
 where
-    T: Trait + 'b,
+    T: Trait + EscrowTrait + 'b,
     V: Vm<T, Executable = E>,
     L: Loader<T, Executable = E>,
 {
@@ -183,14 +119,12 @@ where
         value: BalanceOf<T>,
         gas_meter: &mut GasMeter<T>,
     ) -> Result<(), DispatchError> {
-        escrow_transfer(
+        escrow_transfer::<T>(
             &self.caller.clone(),
             &self.requester,
             to,
-            value,
-            gas_meter,
+            EscrowBalanceOf::<T>::from(TryInto::<u32>::try_into(value).ok().unwrap()),
             self.transfers,
-            self.call_context.ctx.config,
         )
     }
 
@@ -254,7 +188,7 @@ where
     }
 
     fn balance(&self) -> BalanceOf<T> {
-        T::Currency::free_balance(&self.call_context.ctx.self_account)
+        <T as Trait>::Currency::free_balance(&self.call_context.ctx.self_account)
     }
 
     fn value_transferred(&self) -> BalanceOf<T> {
@@ -304,7 +238,7 @@ where
 
 impl<'a, T, E, V, L> ExecutionContext<'a, T, V, L>
 where
-    T: Trait,
+    T: Trait + EscrowTrait,
     L: Loader<T, Executable = E>,
     V: Vm<T, Executable = E>,
 {
@@ -357,14 +291,12 @@ where
         let escrow_exec_result =
             self.with_nested_context(dest.clone(), contract.trie_id.clone(), |nested| {
                 if value > BalanceOf::<T>::zero() {
-                    escrow_transfer(
+                    escrow_transfer::<T>(
                         &escrow_account.clone(),
                         &requester.clone(),
                         &transfer_dest.clone(),
-                        value,
-                        gas_meter,
+                        EscrowBalanceOf::<T>::from(TryInto::<u32>::try_into(value).ok().unwrap()),
                         transfers,
-                        &nested.config.clone(),
                     );
                 }
 
@@ -428,7 +360,7 @@ where
                         just_transfer::<T>(
                             &requester.clone(),
                             &escrow_account.clone(),
-                            BalanceOf::<T>::from(transfer.value),
+                            EscrowBalanceOf::<T>::from(transfer.value),
                         );
                     }
                     Ok(ExecReturnValue {
