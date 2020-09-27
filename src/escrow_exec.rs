@@ -23,9 +23,9 @@ use crate::{
 };
 use bitflags::bitflags;
 use codec::{Decode, Encode};
-use escrow_gateway_primitives::{
+use gateway_escrow_engine::{
     transfers::{escrow_transfer, just_transfer, BalanceOf as EscrowBalanceOf, TransferEntry},
-    Trait as EscrowTrait,
+    EscrowTrait
 };
 use frame_support::sp_runtime::DispatchResult;
 use frame_support::{
@@ -38,7 +38,7 @@ use frame_support::{
 };
 use sp_runtime::traits::{Bounded, Convert, Saturating, Zero};
 use sp_std::{cell::RefCell, convert::TryInto, marker::PhantomData, prelude::*, rc::Rc};
-use std::collections::HashMap;
+
 
 #[derive(Debug, PartialEq, Eq, Encode, Decode, Clone)]
 #[codec(compact)]
@@ -208,7 +208,7 @@ where
     }
 
     fn random(&self, subject: &[u8]) -> SeedOf<T> {
-        T::Randomness::random(subject)
+        <T as Trait>::Randomness::random(subject)
     }
 
     fn deposit_event(&mut self, topics: Vec<T::Hash>, data: Vec<u8>) {
@@ -305,7 +305,7 @@ where
                     block_number: <frame_system::Module<T>>::block_number(),
                     caller: escrow_account.clone(),
                     requester: requester.clone(),
-                    timestamp: T::Time::now(),
+                    timestamp: <T as Trait>::Time::now(),
                     value_transferred: value.clone(),
                     transfers,
                     deferred_storage_writes,
