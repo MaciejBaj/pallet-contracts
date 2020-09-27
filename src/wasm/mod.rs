@@ -27,10 +27,11 @@ use sp_sandbox;
 use sp_std::prelude::*;
 
 #[macro_use]
-mod env_def;
+pub mod env_def;
 pub mod code_cache;
 pub mod prepare;
 pub mod runtime;
+pub mod runtime_escrow;
 
 use self::code_cache::load as load_code;
 use self::runtime::{to_execution_result, Runtime};
@@ -43,18 +44,18 @@ pub use self::runtime::ReturnCode;
 pub struct PrefabWasmModule {
     /// Version of the schedule with which the code was instrumented.
     #[codec(compact)]
-    schedule_version: u32,
+    pub schedule_version: u32,
     #[codec(compact)]
-    initial: u32,
+    pub initial: u32,
     #[codec(compact)]
-    maximum: u32,
+    pub maximum: u32,
     /// This field is reserved for future evolution of format.
     ///
     /// Basically, for now this field will be serialized as `None`. In the future
     /// we would be able to extend this structure with.
     _reserved: Option<()>,
     /// Code instrumented with the latest schedule.
-    code: Vec<u8>,
+    pub code: Vec<u8>,
 }
 
 /// Wasm executable loaded by `WasmLoader` and executed by `WasmVm`.
@@ -132,6 +133,7 @@ impl<'a, T: Trait> crate::exec::Vm<T> for WasmVm<'a> {
             "memory",
             memory.clone(),
         );
+
         runtime::Env::impls(&mut |name, func_ptr| {
             imports.add_host_func(self::prepare::IMPORT_MODULE_FN, name, func_ptr);
         });

@@ -84,12 +84,12 @@ impl From<ExecReturnValue> for ReturnCode {
 }
 
 /// The data passed through when a contract uses `seal_return`.
-struct ReturnData {
+pub struct ReturnData {
     /// The flags as passed through by the contract. They are still unchecked and
     /// will later be parsed into a `ReturnFlags` bitflags struct.
-    flags: u32,
+    pub flags: u32,
     /// The output buffer passed by the contract as return data.
-    data: Vec<u8>,
+    pub data: Vec<u8>,
 }
 
 /// Enumerates all possible reasons why a trap was generated.
@@ -98,7 +98,7 @@ struct ReturnData {
 /// occurred (the SupervisorError variant).
 /// The other case is where the trap does not constitute an error but rather was invoked
 /// as a quick way to terminate the application (all other variants).
-enum TrapReason {
+pub enum TrapReason {
     /// The supervisor trapped the contract because of an error condition occurred during
     /// execution in privileged code.
     SupervisorError(DispatchError),
