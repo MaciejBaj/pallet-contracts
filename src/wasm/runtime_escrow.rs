@@ -34,7 +34,6 @@ use frame_support::{
     StorageMap,
 };
 use gateway_escrow_engine::{
-    
     transfers::{escrow_transfer, just_transfer, BalanceOf as EscrowBalanceOf, TransferEntry},
     EscrowTrait,
 };
@@ -43,8 +42,6 @@ use sp_std::{cell::RefCell, convert::TryInto, marker::PhantomData, prelude::*, r
 
 use sp_sandbox;
 use sp_sandbox::Value;
-#[macro_use]
-use crate::wasm::env_def::macros;
 use crate::wasm::runtime;
 use crate::wasm::runtime::{ReturnCode, ReturnData, Runtime, TrapReason};
 
@@ -219,8 +216,6 @@ pub fn seal_transfer(
                 data: vec![],
             });
 
-            println!("PUSHY PUSHY {:?}", ctx.transfers);
-
             Ok(ReturnCode::Success)
         }
     );
@@ -372,10 +367,7 @@ pub fn raw_escrow_call<T: EscrowTrait>(
     let escrow_account_trie_id =
         get_child_storage_for_current_execution::<T>(escrow_account, code_hash);
 
-    println!("SHFKFHK {:?}", escrow_account_trie_id.clone());
-
     let pre_storage = child::root(&escrow_account_trie_id.clone());
-    // let mut post_storage = vec![];
 
     let memory =
         sp_sandbox::Memory::new(exec.prefab_module.initial, Some(exec.prefab_module.maximum))
