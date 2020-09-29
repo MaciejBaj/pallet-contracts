@@ -83,8 +83,6 @@ where
     }
 
     fn set_storage(&mut self, key: StorageKey, value: Option<Vec<u8>>) {
-        println!("escrow set_storage {:?} : {:?}", key, value);
-
         let trie_id = self.call_context.ctx.self_trie_id.as_ref().expect(
             "`ctx.self_trie_id` points to an alive contract within the `CallContext`;\
 				it cannot be `None`;\
