@@ -54,6 +54,7 @@ std = [
 	"parity-wasm/std",
 	"pwasm-utils/std",
 	"wasmi-validation/std",
+	"gateway-escrow-engine/std",
 	"pallet-contracts-primitives/std",
 ]
 runtime-benchmarks = [
