@@ -460,9 +460,10 @@ pub fn raw_escrow_call<T: EscrowTrait>(
         dest: T::AccountId::encode(&escrow_account.clone()),
     });
 
-    match to_execution_result(state, result) {
-        Ok(out) => {
-            for mut transfer in inner_exec_transfers.iter() {
+    match result {
+        Ok(_) => {
+            // Ensuring successful execution escrow transfers from within the contract.
+            for transfer in state.transfers.iter() {
                 escrow_transfer::<T>(
                     &escrow_account.clone(),
                     &requester.clone(),
@@ -473,10 +474,10 @@ pub fn raw_escrow_call<T: EscrowTrait>(
                     transfers,
                 );
             }
-            Ok(out)
         }
-        Err(err) => Err(err),
+        _ => (),
     }
+    to_execution_result(state, result)
 }
 
 fn read_sandbox_memory(
