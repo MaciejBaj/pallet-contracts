@@ -23,10 +23,6 @@ use crate::{
 };
 use bitflags::bitflags;
 use codec::{Decode, Encode};
-use gateway_escrow_engine::{
-    transfers::{escrow_transfer, just_transfer, BalanceOf as EscrowBalanceOf, TransferEntry},
-    EscrowTrait
-};
 use frame_support::sp_runtime::DispatchResult;
 use frame_support::{
     dispatch::DispatchError,
@@ -36,9 +32,12 @@ use frame_support::{
     weights::Weight,
     StorageMap,
 };
+use gateway_escrow_engine::{
+    transfers::{escrow_transfer, just_transfer, BalanceOf as EscrowBalanceOf, TransferEntry},
+    EscrowTrait,
+};
 use sp_runtime::traits::{Bounded, Convert, Saturating, Zero};
 use sp_std::{cell::RefCell, convert::TryInto, marker::PhantomData, prelude::*, rc::Rc};
-
 
 #[derive(Debug, PartialEq, Eq, Encode, Decode, Clone)]
 #[codec(compact)]

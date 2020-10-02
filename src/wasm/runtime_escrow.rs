@@ -40,10 +40,10 @@ use gateway_escrow_engine::{
 use sp_runtime::traits::{Bounded, Convert, Hash, Saturating, Zero};
 use sp_std::{cell::RefCell, convert::TryInto, marker::PhantomData, prelude::*, rc::Rc};
 
-use sp_sandbox;
-use sp_sandbox::Value;
 use crate::wasm::runtime;
 use crate::wasm::runtime::{ReturnCode, ReturnData, Runtime, TrapReason};
+use sp_sandbox;
+use sp_sandbox::Value;
 
 pub type MomentOf<T> = <<T as EscrowTrait>::Time as Time>::Moment;
 
@@ -441,29 +441,22 @@ pub fn raw_escrow_call<T: EscrowTrait>(
         seal_transfer,
     );
 
-    let mut instance =
-        match sp_sandbox::Instance::new(&exec.prefab_module.code, &env_builder, &mut state) {
-            Ok(instance) => instance,
-            Err(_err) => Err(ExecError {
-                error: DispatchError::Other(
-                    "Failed instantiating code with sandbox instance for provided WASM code.",
-                ),
-                origin: ErrorOrigin::Caller,
-            })?,
-        };
+    let sandbox_result =
+        sp_sandbox::Instance::new(&exec.prefab_module.code, &env_builder, &mut state)
+            .and_then(|mut instance| instance.invoke(exec.entrypoint_name, &[], &mut state));
 
-    let result = instance.invoke(exec.entrypoint_name, &[], &mut state);
-
-    call_stamps.push(CallStamp {
-        pre_storage,
-        post_storage: child::root(&escrow_account_trie_id.clone()),
-        dest: T::AccountId::encode(&escrow_account.clone()),
-    });
+    let result = to_execution_result(state, sandbox_result);
 
     match result {
-        Ok(_) => {
+        Ok(result) => {
+            call_stamps.push(CallStamp {
+                pre_storage,
+                post_storage: child::root(&escrow_account_trie_id.clone()),
+                dest: T::AccountId::encode(&escrow_account.clone()),
+            });
+
             // Ensuring successful execution escrow transfers from within the contract.
-            for transfer in state.transfers.iter() {
+            for transfer in inner_exec_transfers.iter() {
                 escrow_transfer::<T>(
                     &escrow_account.clone(),
                     &requester.clone(),
@@ -474,10 +467,16 @@ pub fn raw_escrow_call<T: EscrowTrait>(
                     transfers,
                 );
             }
+
+            Ok(result)
         }
-        _ => (),
+        Err(_err) => Err(ExecError {
+            error: DispatchError::Other(
+                "Failed instantiating code with sandbox instance for provided WASM code.",
+            ),
+            origin: ErrorOrigin::Caller,
+        })?,
     }
-    to_execution_result(state, result)
 }
 
 fn read_sandbox_memory(
