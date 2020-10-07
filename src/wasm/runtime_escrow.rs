@@ -34,9 +34,13 @@ use frame_support::{
     StorageMap,
 };
 use gateway_escrow_engine::{
-    transfers::{escrow_transfer, just_transfer, BalanceOf as EscrowBalanceOf, TransferEntry},
+    transfers::{
+        account_encode_to_h256, escrow_transfer, h256_to_account, just_transfer,
+        BalanceOf as EscrowBalanceOf, TransferEntry,
+    },
     EscrowTrait,
 };
+use sp_core::H256;
 use sp_runtime::traits::{Bounded, Convert, Hash, Saturating, Zero};
 use sp_std::{cell::RefCell, convert::TryInto, marker::PhantomData, prelude::*, rc::Rc};
 
@@ -176,22 +180,6 @@ pub fn seal_input(
     );
 }
 
-pub fn ext_escrow_transfer<T: EscrowTrait>(
-    escrow_account_encoded: Vec<u8>,
-    requester_encoded: Vec<u8>,
-    target_to_decoded: <T as frame_system::Trait>::AccountId,
-    value_decoded: EscrowBalanceOf<T>,
-    mut transfers: &mut Vec<TransferEntry>,
-) -> Result<(), DispatchError> {
-    escrow_transfer::<T>(
-        &T::AccountId::decode(&mut &escrow_account_encoded[..]).unwrap(),
-        &T::AccountId::decode(&mut &requester_encoded[..]).unwrap(),
-        &target_to_decoded,
-        value_decoded,
-        transfers,
-    )
-}
-
 pub fn seal_transfer(
     ctx: &mut RawEscrowExecState,
     args: &[Value],
@@ -201,7 +189,7 @@ pub fn seal_transfer(
         args,
         ctx,
         (account_ptr: u32, account_len: u32, value_ptr: u32, value_len: u32) -> ReturnCode => {
-            let callee_raw: u64 = read_sandbox_memory_as(ctx, account_ptr, account_len)?;
+            let callee_raw = read_sandbox_memory(ctx, account_ptr, account_len)?;
             let val_num: u32 = read_sandbox_memory_as(ctx, value_ptr, value_len)?;
             // Not to complicate the context here, there is no dependency on a trait here.
             // Check whether the
@@ -211,7 +199,7 @@ pub fn seal_transfer(
             ctx.requester_available_balance -= (val_num as u64);
 
             ctx.transfers.push(TransferEntry {
-                to: callee_raw.encode(),
+                to: account_encode_to_h256(&callee_raw[..]),
                 value: val_num,
                 data: vec![],
             });
@@ -460,7 +448,7 @@ pub fn raw_escrow_call<T: EscrowTrait>(
                 escrow_transfer::<T>(
                     &escrow_account.clone(),
                     &requester.clone(),
-                    &T::AccountId::decode(&mut &transfer.to[..]).unwrap(),
+                    &h256_to_account(transfer.to),
                     EscrowBalanceOf::<T>::from(
                         TryInto::<u32>::try_into(transfer.value).ok().unwrap(),
                     ),
