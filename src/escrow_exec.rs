@@ -13,22 +13,21 @@
 
 // You should have received a copy of the GNU General Public License
 // along with Substrate. If not, see <http://www.gnu.org/licenses/>.
-use crate::exec::TransferCause;
+
 use crate::exec::*;
-use crate::wasm::{PrefabWasmModule, WasmExecutable, WasmLoader};
+
 use crate::{
-    gas::{Gas, GasMeter, Token},
-    rent, storage, BalanceOf, CodeHash, Config, ContractAddressFor, ContractInfo, ContractInfoOf,
-    Error, Event, RawEvent, Trait, TrieId, TrieIdGenerator,
+    gas::{GasMeter},
+    rent, BalanceOf, CodeHash, Config, ContractInfo, ContractInfoOf,
+    Error, Trait,
 };
-use bitflags::bitflags;
+
 use codec::{Decode, Encode};
-use frame_support::sp_runtime::DispatchResult;
+
 use frame_support::{
     dispatch::DispatchError,
-    ensure,
     storage::child,
-    traits::{Currency, ExistenceRequirement, Randomness, Time},
+    traits::{Currency, Randomness, Time},
     weights::Weight,
     StorageMap,
 };
@@ -36,8 +35,8 @@ use gateway_escrow_engine::{
     transfers::{escrow_transfer, just_transfer, BalanceOf as EscrowBalanceOf, TransferEntry},
     EscrowTrait,
 };
-use sp_runtime::traits::{Bounded, Convert, Saturating, Zero};
-use sp_std::{cell::RefCell, convert::TryInto, marker::PhantomData, prelude::*, rc::Rc};
+use sp_runtime::traits::{Zero};
+use sp_std::{convert::TryInto, prelude::*};
 
 #[derive(Debug, PartialEq, Eq, Encode, Decode, Clone)]
 #[codec(compact)]
@@ -70,10 +69,10 @@ pub struct EscrowCallContext<'a, 'b: 'a, T: Trait + 'b, V: Vm<T> + 'b, L: Loader
 }
 
 impl<'a, 'b: 'a, T, E, V, L> Ext for EscrowCallContext<'a, 'b, T, V, L>
-where
-    T: Trait + EscrowTrait + 'b,
-    V: Vm<T, Executable = E>,
-    L: Loader<T, Executable = E>,
+    where
+        T: Trait + EscrowTrait + 'b,
+        V: Vm<T, Executable = E>,
+        L: Loader<T, Executable = E>,
 {
     type T = T;
 
@@ -114,7 +113,7 @@ where
         &mut self,
         to: &T::AccountId,
         value: BalanceOf<T>,
-        gas_meter: &mut GasMeter<T>,
+        _gas_meter: &mut GasMeter<T>,
     ) -> Result<(), DispatchError> {
         escrow_transfer::<T>(
             &self.caller.clone(),
@@ -234,10 +233,10 @@ where
 }
 
 impl<'a, T, E, V, L> ExecutionContext<'a, T, V, L>
-where
-    T: Trait + EscrowTrait,
-    L: Loader<T, Executable = E>,
-    V: Vm<T, Executable = E>,
+    where
+        T: Trait + EscrowTrait,
+        L: Loader<T, Executable = E>,
+        V: Vm<T, Executable = E>,
 {
     /// Make a call to the specified address, optionally transferring some funds.
     pub fn escrow_call(
@@ -249,9 +248,9 @@ where
         value: BalanceOf<T>,
         gas_meter: &mut GasMeter<T>,
         input_data: Vec<u8>,
-        mut transfers: &mut Vec<TransferEntry>,
-        mut deferred_storage_writes: &mut Vec<DeferredStorageWrite>,
-        mut call_stamps: &mut Vec<CallStamp>,
+        transfers: &mut Vec<TransferEntry>,
+        deferred_storage_writes: &mut Vec<DeferredStorageWrite>,
+        call_stamps: &mut Vec<CallStamp>,
         executable: &E,
     ) -> ExecResult {
         if self.depth == self.config.max_depth as usize {
@@ -294,7 +293,7 @@ where
                         &transfer_dest.clone(),
                         EscrowBalanceOf::<T>::from(TryInto::<u32>::try_into(value).ok().unwrap()),
                         transfers,
-                    );
+                    ).map_err(|e| e)?
                 }
 
                 let ext = EscrowCallContext {
@@ -353,12 +352,12 @@ where
                 if err.error == successful_execution_err {
                     // Write should be reverted, but the transfer should stay.
                     // Transfer funds from requester to escrow account again.
-                    for mut transfer in transfers.iter() {
+                    for transfer in transfers.iter() {
                         just_transfer::<T>(
                             &requester.clone(),
                             &escrow_account.clone(),
                             EscrowBalanceOf::<T>::from(transfer.value),
-                        );
+                        ).map_err(|e| e)?
                     }
                     Ok(ExecReturnValue {
                         flags: ReturnFlags::REVERT,

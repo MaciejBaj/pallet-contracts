@@ -13,39 +13,34 @@
 
 // You should have received a copy of the GNU General Public License
 // along with Substrate. If not, see <http://www.gnu.org/licenses/>.
-use crate::exec::TransferCause;
+
 use crate::exec::*;
-use crate::wasm::{PrefabWasmModule, WasmExecutable, WasmLoader};
+use crate::wasm::WasmExecutable;
 use crate::{
-    gas::{Gas, GasMeter, Token},
-    rent, storage, BalanceOf, CodeHash, ContractAddressFor, ContractInfo, ContractInfoOf, Error,
-    Event, RawEvent, Schedule, Trait, TrieId, TrieIdGenerator,
+    gas::Gas,
+    Schedule
 };
-use bitflags::bitflags;
+
 use codec::{Decode, Encode};
-use frame_support::sp_runtime::DispatchResult;
+
 use frame_support::{
     dispatch::DispatchError,
-    ensure,
     storage::child,
-    storage::child::{get_raw, put_raw, ChildInfo},
-    traits::{Currency, ExistenceRequirement, Randomness, Time},
-    weights::Weight,
-    StorageMap,
+    storage::child::{get_raw, ChildInfo},
+    traits::{Currency, Time},
 };
 use gateway_escrow_engine::{
     transfers::{
-        account_encode_to_h256, escrow_transfer, h256_to_account, just_transfer,
+        account_encode_to_h256, escrow_transfer, h256_to_account,
         BalanceOf as EscrowBalanceOf, TransferEntry,
     },
     EscrowTrait,
 };
-use sp_core::H256;
-use sp_runtime::traits::{Bounded, Convert, Hash, Saturating, Zero};
-use sp_std::{cell::RefCell, convert::TryInto, marker::PhantomData, prelude::*, rc::Rc};
 
-use crate::wasm::runtime;
-use crate::wasm::runtime::{ReturnCode, ReturnData, Runtime, TrapReason};
+use sp_runtime::traits::{Hash, Saturating, Zero};
+use sp_std::{convert::TryInto, prelude::*};
+
+use crate::wasm::runtime::{ReturnCode, ReturnData, TrapReason};
 use sp_sandbox;
 use sp_sandbox::Value;
 
@@ -135,28 +130,28 @@ pub fn get_child_storage_for_current_execution<T: EscrowTrait>(
 }
 
 pub fn gas(
-    ctx: &mut RawEscrowExecState,
+    _ctx: &mut RawEscrowExecState,
     args: &[Value],
 ) -> Result<sp_sandbox::ReturnValue, sp_sandbox::HostError> {
     let mut args = args.iter();
     unmarshall_then_body_then_marshall!(
         args,
         ctx,
-        (amount: u32) => {
+        (_amount: u32) => {
             Ok(())
         }
     );
 }
 
 pub fn seal_deposit_event(
-    ctx: &mut RawEscrowExecState,
+    _ctx: &mut RawEscrowExecState,
     args: &[Value],
 ) -> Result<sp_sandbox::ReturnValue, sp_sandbox::HostError> {
     let mut args = args.iter();
     unmarshall_then_body_then_marshall!(
         args,
         ctx,
-        (topics_ptr: u32, topics_len: u32, data_ptr: u32, data_len: u32) => {
+        (_topics_ptr: u32, _topics_len: u32, _data_ptr: u32, _data_len: u32) => {
             Ok(())
         }
     );
@@ -196,7 +191,7 @@ pub fn seal_transfer(
             if val_num >= ctx.requester_available_balance as u32 {
                 return Ok(ReturnCode::BelowSubsistenceThreshold);
             }
-            ctx.requester_available_balance -= (val_num as u64);
+            ctx.requester_available_balance -= val_num as u64;
 
             ctx.transfers.push(TransferEntry {
                 to: account_encode_to_h256(&callee_raw[..]),
@@ -337,9 +332,9 @@ pub fn raw_escrow_call<T: EscrowTrait>(
     value: EscrowBalanceOf<T>,
     gas_limit: Gas,
     input_data: Vec<u8>,
-    mut transfers: &mut Vec<TransferEntry>,
-    mut deferred_storage_writes: &mut Vec<DeferredStorageWrite>,
-    mut call_stamps: &mut Vec<CallStamp>,
+    transfers: &mut Vec<TransferEntry>,
+    _deferred_storage_writes: &mut Vec<DeferredStorageWrite>,
+    call_stamps: &mut Vec<CallStamp>,
     exec: &WasmExecutable,
     code_hash: T::Hash,
 ) -> ExecResult {
@@ -350,7 +345,7 @@ pub fn raw_escrow_call<T: EscrowTrait>(
             &transfer_dest.clone(),
             EscrowBalanceOf::<T>::from(TryInto::<u32>::try_into(value).ok().unwrap()),
             transfers,
-        );
+        ).map_err(|e| e)?
     }
     let escrow_account_trie_id =
         get_child_storage_for_current_execution::<T>(escrow_account, code_hash);
@@ -453,7 +448,7 @@ pub fn raw_escrow_call<T: EscrowTrait>(
                         TryInto::<u32>::try_into(transfer.value).ok().unwrap(),
                     ),
                     transfers,
-                );
+                ).map_err(|e| e)?
             }
 
             Ok(result)
