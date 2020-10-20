@@ -17,9 +17,7 @@
 use crate::exec::*;
 
 use crate::{
-    gas::{GasMeter},
-    rent, BalanceOf, CodeHash, Config, ContractInfo, ContractInfoOf,
-    Error, Trait,
+    gas::GasMeter, rent, BalanceOf, CodeHash, Config, ContractInfo, ContractInfoOf, Error, Trait,
 };
 
 use codec::{Decode, Encode};
@@ -35,7 +33,7 @@ use gateway_escrow_engine::{
     transfers::{escrow_transfer, just_transfer, BalanceOf as EscrowBalanceOf, TransferEntry},
     EscrowTrait,
 };
-use sp_runtime::traits::{Zero};
+use sp_runtime::traits::Zero;
 use sp_std::{convert::TryInto, prelude::*};
 
 #[derive(Debug, PartialEq, Eq, Encode, Decode, Clone)]
@@ -69,10 +67,10 @@ pub struct EscrowCallContext<'a, 'b: 'a, T: Trait + 'b, V: Vm<T> + 'b, L: Loader
 }
 
 impl<'a, 'b: 'a, T, E, V, L> Ext for EscrowCallContext<'a, 'b, T, V, L>
-    where
-        T: Trait + EscrowTrait + 'b,
-        V: Vm<T, Executable = E>,
-        L: Loader<T, Executable = E>,
+where
+    T: Trait + EscrowTrait + 'b,
+    V: Vm<T, Executable = E>,
+    L: Loader<T, Executable = E>,
 {
     type T = T;
 
@@ -233,10 +231,10 @@ impl<'a, 'b: 'a, T, E, V, L> Ext for EscrowCallContext<'a, 'b, T, V, L>
 }
 
 impl<'a, T, E, V, L> ExecutionContext<'a, T, V, L>
-    where
-        T: Trait + EscrowTrait,
-        L: Loader<T, Executable = E>,
-        V: Vm<T, Executable = E>,
+where
+    T: Trait + EscrowTrait,
+    L: Loader<T, Executable = E>,
+    V: Vm<T, Executable = E>,
 {
     /// Make a call to the specified address, optionally transferring some funds.
     pub fn escrow_call(
@@ -293,7 +291,8 @@ impl<'a, T, E, V, L> ExecutionContext<'a, T, V, L>
                         &transfer_dest.clone(),
                         EscrowBalanceOf::<T>::from(TryInto::<u32>::try_into(value).ok().unwrap()),
                         transfers,
-                    ).map_err(|e| e)?
+                    )
+                    .map_err(|e| e)?
                 }
 
                 let ext = EscrowCallContext {
@@ -357,7 +356,8 @@ impl<'a, T, E, V, L> ExecutionContext<'a, T, V, L>
                             &requester.clone(),
                             &escrow_account.clone(),
                             EscrowBalanceOf::<T>::from(transfer.value),
-                        ).map_err(|e| e)?
+                        )
+                        .map_err(|e| e)?
                     }
                     Ok(ExecReturnValue {
                         flags: ReturnFlags::REVERT,

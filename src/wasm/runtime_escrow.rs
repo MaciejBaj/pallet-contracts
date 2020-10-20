@@ -14,35 +14,30 @@
 // You should have received a copy of the GNU General Public License
 // along with Substrate. If not, see <http://www.gnu.org/licenses/>.
 
-use crate::exec::*;
-use crate::wasm::WasmExecutable;
-use crate::{
-    gas::Gas,
-    Schedule
-};
-
 use codec::{Decode, Encode};
-
 use frame_support::{
     dispatch::DispatchError,
     storage::child,
     storage::child::{get_raw, ChildInfo},
     traits::{Currency, Time},
 };
+use frame_system::Trait as SystemTrait;
 use gateway_escrow_engine::{
     transfers::{
-        account_encode_to_h256, escrow_transfer, h256_to_account,
-        BalanceOf as EscrowBalanceOf, TransferEntry,
+        account_encode_to_h256, escrow_transfer, h256_to_account, BalanceOf as EscrowBalanceOf,
+        TransferEntry,
     },
-    EscrowTrait,
+    EscrowTrait, ExtendedWasm,
 };
-
 use sp_runtime::traits::{Hash, Saturating, Zero};
-use sp_std::{convert::TryInto, prelude::*};
-
-use crate::wasm::runtime::{ReturnCode, ReturnData, TrapReason};
 use sp_sandbox;
 use sp_sandbox::Value;
+use sp_std::{convert::TryInto, prelude::*};
+
+use crate::exec::*;
+use crate::wasm::runtime::{ReturnCode, ReturnData, TrapReason};
+use crate::wasm::WasmExecutable;
+use crate::{gas::Gas, Schedule};
 
 pub type MomentOf<T> = <<T as EscrowTrait>::Time as Time>::Moment;
 
@@ -170,6 +165,78 @@ pub fn seal_input(
                 write_sandbox_output(ctx, buf_ptr, buf_len_ptr, &input, false)
             } else {
                 Err(sp_sandbox::HostError)
+            }
+        }
+    );
+}
+
+pub fn seal_call<T: ExtendedWasm + SystemTrait>(
+    ctx: &mut RawEscrowExecState,
+    args: &[Value],
+) -> Result<sp_sandbox::ReturnValue, sp_sandbox::HostError> {
+    let mut args = args.iter();
+    unmarshall_then_body_then_marshall!(
+        args,
+        ctx,
+        (
+            callee_ptr: u32,
+            callee_len: u32,
+            gas: u64,
+            value_ptr: u32,
+            value_len: u32,
+            input_data_ptr: u32,
+            input_data_len: u32,
+            output_ptr: u32,
+            output_len_ptr: u32
+        ) -> ReturnCode => {
+            use gateway_escrow_engine::DispatchRuntimeCall;
+            // [32, 64> bytes of input reserved for a module name.
+            let module_name = String::from_utf8(
+                read_sandbox_memory(ctx, 32, 32)?
+                .into_iter()
+                .filter(|i| *i > 0 as u8)
+                .collect()
+            ).unwrap();
+            // [64, 96> bytes of input reserved for a module name. 64 bytes reserved in total.
+            let fn_name = String::from_utf8(
+                read_sandbox_memory(ctx, 64, 32)?
+                .into_iter()
+                .filter(|i| *i > 0 as u8)
+                .collect()
+            ).unwrap();
+
+            // Everything >64 reserved bytes constitutes actual input.
+            let input = read_sandbox_memory(ctx, input_data_ptr + 64, input_data_len)?;
+
+            let callee: T::AccountId = read_sandbox_memory_as(ctx, callee_ptr, callee_len)?;
+
+            let requester = T::AccountId::decode(&mut &ctx.requester_encoded[..]).map_err(|_| sp_sandbox::HostError)?;
+
+            let escrow_account = T::AccountId::decode(&mut &ctx.escrow_account_encoded[..]).map_err(|_| sp_sandbox::HostError)?;
+
+            let amount_u32: u32 = read_sandbox_memory_as(ctx, value_ptr, value_len)?;
+
+            let value = EscrowBalanceOf::<T>::from(amount_u32);
+
+            println!("callee = {:?} {:?} {:?} {:?}", callee, requester, escrow_account, value);
+            match T::DispatchRuntimeCall::dispatch_runtime_call(
+                &module_name,
+                &fn_name,
+                &input,
+                escrow_account,
+                requester,
+                callee,
+                value,
+                gas,
+            ) {
+                Ok(_) => {
+                    write_sandbox_output(ctx, output_ptr, output_len_ptr, &[], true)?;
+                    Ok(ReturnCode::Success)
+                },
+                Err(_err) => {
+                    // todo: Store error.
+                    Err(sp_sandbox::HostError)
+                }
             }
         }
     );
@@ -325,7 +392,7 @@ pub fn to_execution_result(
     }
 }
 
-pub fn raw_escrow_call<T: EscrowTrait>(
+pub fn raw_escrow_call<T: EscrowTrait + ExtendedWasm + SystemTrait>(
     escrow_account: &T::AccountId,
     requester: &T::AccountId,
     transfer_dest: &T::AccountId,
@@ -345,7 +412,8 @@ pub fn raw_escrow_call<T: EscrowTrait>(
             &transfer_dest.clone(),
             EscrowBalanceOf::<T>::from(TryInto::<u32>::try_into(value).ok().unwrap()),
             transfers,
-        ).map_err(|e| e)?
+        )
+        .map_err(|e| e)?
     }
     let escrow_account_trie_id =
         get_child_storage_for_current_execution::<T>(escrow_account, code_hash);
@@ -423,6 +491,11 @@ pub fn raw_escrow_call<T: EscrowTrait>(
         "seal_transfer",
         seal_transfer,
     );
+    env_builder.add_host_func(
+        crate::wasm::prepare::IMPORT_MODULE_FN,
+        "seal_call",
+        seal_call::<T>,
+    );
 
     let sandbox_result =
         sp_sandbox::Instance::new(&exec.prefab_module.code, &env_builder, &mut state)
@@ -448,7 +521,8 @@ pub fn raw_escrow_call<T: EscrowTrait>(
                         TryInto::<u32>::try_into(transfer.value).ok().unwrap(),
                     ),
                     transfers,
-                ).map_err(|e| e)?
+                )
+                .map_err(|e| e)?
             }
 
             Ok(result)
