@@ -31,7 +31,6 @@ pub mod env_def;
 pub mod code_cache;
 pub mod prepare;
 pub mod runtime;
-pub mod runtime_escrow;
 
 use self::code_cache::load as load_code;
 use self::runtime::{to_execution_result, Runtime};
